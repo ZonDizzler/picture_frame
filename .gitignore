@@ -1,0 +1,13 @@
+# Generated images and metadata
+images/
+
+# Application state
+app_state.json
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+.venv/
