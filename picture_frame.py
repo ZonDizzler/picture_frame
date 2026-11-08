@@ -37,15 +37,16 @@ current_index = -1
 # Stores original prompts for images
 image_prompts = {}
 
+# Continuous generation checkbox variable
+continuous_generation = None
+
 
 # --------------------------------------------------
 # SAVE / LOAD APPLICATION STATE
 # --------------------------------------------------
 
 def save_state():
-    """
-    Save the currently displayed image and prompt.
-    """
+    """Save the currently displayed image and prompt."""
 
     data = {
         "current_image": current_image_path,
@@ -62,9 +63,7 @@ def save_state():
 
 
 def load_state():
-    """
-    Restore the last displayed image and prompt.
-    """
+    """Restore the last displayed image and prompt."""
 
     global current_image_path
     global current_prompt
@@ -144,9 +143,7 @@ def next_image_path(prompt):
 # --------------------------------------------------
 
 def refresh_image_history():
-    """
-    Scan the images folder and sort images chronologically.
-    """
+    """Scan the images folder and sort images chronologically."""
 
     global image_history
     global current_index
@@ -174,11 +171,7 @@ def refresh_image_history():
 # --------------------------------------------------
 
 def get_image_prompt(path):
-    """
-    Retrieve the original prompt for an image.
-    """
-
-    global current_prompt
+    """Retrieve the original prompt for an image."""
 
     if path in image_prompts:
         return image_prompts[path]
@@ -268,9 +261,7 @@ def show_image(image, path, prompt):
 # --------------------------------------------------
 
 def display_history_image(index):
-    """
-    Display an image from the history collection.
-    """
+    """Display an image from the history collection."""
 
     global current_index
 
@@ -302,9 +293,7 @@ def display_history_image(index):
 # --------------------------------------------------
 
 def previous_image():
-    """
-    Navigate to the previous image.
-    """
+    """Navigate to the previous image."""
 
     if not image_history:
         return
@@ -315,9 +304,7 @@ def previous_image():
 
 
 def next_image():
-    """
-    Navigate to the next image.
-    """
+    """Navigate to the next image."""
 
     if not image_history:
         return
@@ -475,6 +462,14 @@ def generate_image(prompt=None):
                     saved_path,
                     prompt
                 )
+
+                # Generate another image if continuous mode is enabled.
+                # The current generation finishes before the next begins.
+                if continuous_generation.get():
+                    root.after(
+                        500,
+                        lambda: generate_image(prompt)
+                    )
 
             root.after(0, finish_generation)
 
@@ -738,6 +733,30 @@ generate_button = tk.Button(
 
 generate_button.pack(
     side="right"
+)
+
+
+# --------------------------------------------------
+# CONTINUOUS GENERATION CHECKBOX
+# --------------------------------------------------
+
+continuous_generation = tk.BooleanVar(value=False)
+
+continuous_checkbox = tk.Checkbutton(
+    input_frame,
+    text="Keep generating",
+    variable=continuous_generation,
+    font=("Helvetica", 11),
+    fg="white",
+    bg="#202020",
+    activeforeground="white",
+    activebackground="#202020",
+    selectcolor="#333333"
+)
+
+continuous_checkbox.pack(
+    side="right",
+    padx=(0, 12)
 )
 
 
