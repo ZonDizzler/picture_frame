@@ -254,11 +254,6 @@ def show_image(image, path, prompt):
         text=""
     )
 
-    image_label.bind(
-        "<Button-1>",
-        open_image_file
-    )
-
     image_prompts[path] = prompt
 
     save_state()
@@ -273,6 +268,8 @@ def show_image(image, path, prompt):
         status_label.config(
             text=f"Saved to {os.path.relpath(path, APP_DIR)}"
         )
+
+    open_image_button.config(state="normal")
 
     update_generation_controls()
 
@@ -676,7 +673,6 @@ image_label = tk.Label(
     font=("Helvetica", 16),
     fg="#999999",
     bg="#303030",
-    cursor="hand2"
 )
 
 image_label.pack(
@@ -748,8 +744,23 @@ next_button.pack(
 # STATUS
 # --------------------------------------------------
 
-status_label = tk.Label(
+# --------------------------------------------------
+# STATUS + OPEN IMAGE BUTTON
+# --------------------------------------------------
+
+status_frame = tk.Frame(
     root,
+    bg="#202020"
+)
+
+status_frame.pack(
+    fill="x",
+    padx=25,
+    pady=(5, 10)
+)
+
+status_label = tk.Label(
+    status_frame,
     text="Ready",
     font=("Helvetica", 10),
     fg="#aaaaaa",
@@ -757,9 +768,23 @@ status_label = tk.Label(
 )
 
 status_label.pack(
-    pady=(5, 10)
+    side="left",
+    expand=True
 )
 
+open_image_button = tk.Button(
+    status_frame,
+    text="Open Image",
+    font=("Helvetica", 10),
+    command=open_image_file,
+    state="disabled",
+    padx=12,
+    pady=5
+)
+
+open_image_button.pack(
+    side="right"
+)
 
 # --------------------------------------------------
 # PROMPT INPUT
