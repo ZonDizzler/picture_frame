@@ -8,6 +8,7 @@ import tkinter as tk
 from tkinter import messagebox
 from threading import Thread
 from pathlib import Path
+from datetime import datetime
 from PIL import Image, ImageTk
 
 
@@ -40,7 +41,7 @@ image_prompts = {}
 # Continuous generation checkbox variable
 continuous_generation = None
 
-# True while an MFLUX process is running
+# Prevent overlapping MFLUX processes.
 is_generating = False
 
 
@@ -146,7 +147,7 @@ def next_image_path(prompt):
 # --------------------------------------------------
 
 def refresh_image_history():
-    """Scan the images folder and sort images chronologically."""
+    """Rescan the image folder, automatically excluding deleted files."""
 
     global image_history
     global current_index
@@ -155,14 +156,20 @@ def refresh_image_history():
         [
             str(path)
             for path in IMAGE_DIR.iterdir()
-            if path.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp"]
+            if path.is_file()
+            and path.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp"]
         ],
         key=lambda path: os.path.getmtime(path)
     )
 
+    # Remove stale prompt entries for images that no longer exist.
+    existing_paths = set(image_history)
+    for old_path in list(image_prompts):
+        if old_path not in existing_paths:
+            image_prompts.pop(old_path, None)
+
     if current_image_path in image_history:
         current_index = image_history.index(current_image_path)
-
     else:
         current_index = -1
 
@@ -173,19 +180,95 @@ def refresh_image_history():
 # PROMPT LOOKUP
 # --------------------------------------------------
 
-def get_image_prompt(path):
-    """Retrieve the original prompt for an image."""
+def metadata_path(image_path):
+    """Return the JSON sidecar path associated with an image."""
+    return Path(image_path).with_suffix(".json")
 
+
+def save_image_metadata(image_path, prompt):
+    """Save the prompt and generation settings beside the generated image."""
+    metadata = {
+        "prompt": prompt,
+        "model": MODEL,
+        "quantization": int(QUANTIZATION),
+        "steps": int(STEPS),
+        "width": int(IMAGE_WIDTH),
+        "height": int(IMAGE_HEIGHT),
+        "compute_precision": "float16",
+        "created_at": datetime.now().astimezone().isoformat(),
+        "seed": None,
+        "output_file": Path(image_path).name
+    }
+
+    sidecar = metadata_path(image_path)
+    temporary_path = sidecar.with_suffix(sidecar.suffix + ".tmp")
+
+    try:
+        with temporary_path.open("w", encoding="utf-8") as file:
+            json.dump(metadata, file, indent=4, ensure_ascii=False)
+        temporary_path.replace(sidecar)
+    except Exception as error:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        print(f"Could not save metadata for {image_path}: {error}")
+
+
+def load_image_metadata(image_path):
+    """Load an image's sidecar metadata, if it exists and is valid."""
+    sidecar = metadata_path(image_path)
+    if not sidecar.is_file():
+        return None
+
+    try:
+        with sidecar.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError) as error:
+        print(f"Could not read metadata {sidecar}: {error}")
+        return None
+
+
+def get_image_prompt(path):
+    """Retrieve the prompt from memory, sidecar metadata, or legacy filename."""
+    metadata = load_image_metadata(path)
+    if metadata and isinstance(metadata.get("prompt"), str):
+        prompt = metadata["prompt"]
+        image_prompts[path] = prompt
+        return prompt
+
+    # Compatibility with images generated before sidecar metadata existed.
     if path in image_prompts:
         return image_prompts[path]
 
-    # Fallback for images created before this version
+    # Fallback for images generated before sidecar metadata was introduced.
     filename = Path(path).stem
-
     if " #" in filename:
         return filename.rsplit(" #", 1)[0]
-
     return filename
+
+
+def show_generation_details():
+    """Display the selected image's saved generation settings."""
+    if not current_image_path or not os.path.isfile(current_image_path):
+        messagebox.showinfo("Generation Details", "No image is currently selected.")
+        return
+
+    metadata = load_image_metadata(current_image_path)
+    if not metadata:
+        messagebox.showinfo(
+            "Generation Details",
+            "No metadata file exists for this image. It may have been generated\n"
+            "before metadata tracking was added."
+        )
+        return
+
+    details = [
+        f"{key.replace('_', ' ').title()}: {value}"
+        for key, value in metadata.items()
+    ]
+    messagebox.showinfo("Generation Details", "\n".join(details))
 
 
 # --------------------------------------------------
@@ -206,19 +289,6 @@ def update_navigation_buttons():
     image_counter.config(
         text=f"{current_index + 1} / {len(image_history)}"
     )
-
-
-# --------------------------------------------------
-# GENERATION CONTROL STATE
-# --------------------------------------------------
-
-def update_generation_controls():
-    """Disable starting another job while MFLUX is already running."""
-
-    state = "disabled" if is_generating else "normal"
-
-    generate_button.config(state=state)
-    regenerate_button.config(state=state)
 
 
 # --------------------------------------------------
@@ -259,18 +329,12 @@ def show_image(image, path, prompt):
     save_state()
     update_navigation_buttons()
 
-    if is_generating:
-        status_label.config(
-            text=f"Viewing {os.path.relpath(path, APP_DIR)} "
-                 f"| Generation in progress..."
-        )
-    else:
-        status_label.config(
-            text=f"Saved to {os.path.relpath(path, APP_DIR)}"
-        )
+    status_label.config(
+        text=f"Saved to {os.path.relpath(path, APP_DIR)}"
+    )
 
     open_image_button.config(state="normal")
-
+    details_button.config(state="normal")
     update_generation_controls()
 
 
@@ -291,15 +355,19 @@ def display_history_image(index):
 
     path = image_history[index]
 
+    if not os.path.isfile(path):
+        refresh_image_history()
+        status_label.config(text="An image was deleted; history has been refreshed.")
+        return
+
     try:
         image = Image.open(path).convert("RGB")
         prompt = get_image_prompt(path)
-
         current_index = index
-
         show_image(image, path, prompt)
 
     except Exception as error:
+        refresh_image_history()
         messagebox.showerror(
             "Image Error",
             f"Could not display image:\n\n{error}"
@@ -366,10 +434,16 @@ def open_image_file(event=None):
 # ERROR HANDLING
 # --------------------------------------------------
 
+def update_generation_controls():
+    """Disable only generation actions while MFLUX is running."""
+    state = "disabled" if is_generating else "normal"
+    generate_button.config(state=state)
+    regenerate_button.config(state=state if current_prompt else "disabled")
+
+
 def show_error(error):
 
     global is_generating
-
     is_generating = False
     update_generation_controls()
 
@@ -386,71 +460,49 @@ def show_error(error):
 # --------------------------------------------------
 
 def generate_image(prompt=None):
-
     global current_prompt
     global is_generating
 
-    # Prevent overlapping MFLUX processes.
     if is_generating:
         return
 
     if prompt is None:
         prompt = prompt_entry.get().strip()
-
     if not prompt:
         return
 
     current_prompt = prompt
-
     prompt_entry.delete(0, tk.END)
 
     mflux_command = find_mflux()
-
     if not mflux_command:
-
         messagebox.showerror(
             "MFLUX Not Found",
             "Could not find mflux-generate-flux2.\n\n"
             "Make sure MFLUX is installed in the Python "
             "environment used to run this application."
         )
-
         return
 
+    # Preserve the user's current selection while generation runs.
+    selected_path_when_started = current_image_path
     is_generating = True
     update_generation_controls()
-
-    # Navigation remains enabled while the image is generating.
-    status_label.config(
-        text="Generating locally with MFLUX..."
-    )
+    status_label.config(text="Generating locally with MFLUX...")
 
     saved_path = next_image_path(prompt)
 
-    # Remember which image was selected when generation started.
-    selected_path_at_start = current_image_path
-
     def work():
-
         try:
-
             command = [
                 mflux_command,
-
                 "--model", MODEL,
-
                 "--quantize", QUANTIZATION,
-
                 "--compute-precision", "float16",
-
                 "--prompt", prompt,
-
                 "--steps", STEPS,
-
                 "--width", IMAGE_WIDTH,
-
                 "--height", IMAGE_HEIGHT,
-
                 "--output", saved_path
             ]
 
@@ -462,91 +514,62 @@ def generate_image(prompt=None):
             )
 
             if result.returncode != 0:
-
                 raise RuntimeError(
-                    result.stderr
-                    or result.stdout
+                    result.stderr or result.stdout
                     or "MFLUX failed without an error message."
                 )
-
             if not os.path.exists(saved_path):
+                raise RuntimeError("MFLUX finished but did not create the image.")
 
-                raise RuntimeError(
-                    "MFLUX finished but did not create the image."
-                )
-
+            # Save metadata only after MFLUX has successfully created the image.
+            save_image_metadata(saved_path, prompt)
             image = Image.open(saved_path).convert("RGB")
 
             def finish_generation():
-
                 global is_generating
-
-                image_prompts[saved_path] = prompt
                 is_generating = False
-
-                # Add the new image to history without resetting
-                # the user's current selection.
+                image_prompts[saved_path] = prompt
                 refresh_image_history()
 
-                # Automatically display the result only if the user
-                # is still viewing the image selected when generation
-                # started.
-                #
-                # If they browsed elsewhere, leave their selection
-                # untouched.
-                if current_image_path == selected_path_at_start:
-
-                    show_image(
-                        image,
-                        saved_path,
-                        prompt
-                    )
-
+                # Do not pull the user away from an image they selected mid-run.
+                if current_image_path == selected_path_when_started:
+                    show_image(image, saved_path, prompt)
                 else:
                     update_generation_controls()
+                    status_label.config(
+                        text=f"Generated {Path(saved_path).name} (added to history)"
+                    )
+                    save_state()
 
-                status_label.config(
-                    text=f"Generated image saved to "
-                         f"{os.path.relpath(saved_path, APP_DIR)}"
-                )
-
-                # After a short pause, generate from the prompt
-                # associated with whichever image is selected
-                # at that moment.
-                def continue_generation():
-
-                    if continuous_generation.get():
-
-                        next_prompt = current_prompt
-
-                        if next_prompt:
-                            generate_image(next_prompt)
-
+                # In continuous mode, use the prompt belonging to the image
+                # currently selected when this next run begins.
                 if continuous_generation.get():
                     root.after(500, continue_generation)
 
             root.after(0, finish_generation)
 
         except Exception as error:
-
             error_message = str(error)
-
             if os.path.exists(saved_path):
                 try:
                     os.remove(saved_path)
                 except OSError:
                     pass
+            # Avoid leaving behind a sidecar if generation failed.
+            sidecar = metadata_path(saved_path)
+            try:
+                sidecar.unlink(missing_ok=True)
+            except OSError:
+                pass
+            root.after(0, lambda msg=error_message: show_error(msg))
 
-            root.after(
-                0,
-                lambda msg=error_message:
-                    show_error(msg)
-            )
+    Thread(target=work, daemon=True).start()
 
-    Thread(
-        target=work,
-        daemon=True
-    ).start()
+
+def continue_generation():
+    """Start the next continuous run using the currently selected image prompt."""
+    if continuous_generation.get() and current_prompt and not is_generating:
+        generate_image(current_prompt)
 
 
 # --------------------------------------------------
@@ -585,7 +608,7 @@ root.configure(bg="#202020")
 
 
 # --------------------------------------------------
-# HEADER: PROMPT + REGENERATE + CONTINUOUS GENERATION
+# HEADER: PROMPT + REGENERATE
 # --------------------------------------------------
 
 header_frame = tk.Frame(
@@ -644,11 +667,7 @@ continuous_checkbox = tk.Checkbutton(
     activebackground="#202020",
     selectcolor="#333333"
 )
-
-continuous_checkbox.pack(
-    side="right",
-    padx=(15, 0)
-)
+continuous_checkbox.pack(side="right", padx=(0, 12))
 
 
 # --------------------------------------------------
@@ -672,7 +691,7 @@ image_label = tk.Label(
     text="Enter a prompt to generate an image",
     font=("Helvetica", 16),
     fg="#999999",
-    bg="#303030",
+    bg="#303030"
 )
 
 image_label.pack(
@@ -744,47 +763,35 @@ next_button.pack(
 # STATUS
 # --------------------------------------------------
 
-# --------------------------------------------------
-# STATUS + OPEN IMAGE BUTTON
-# --------------------------------------------------
-
-status_frame = tk.Frame(
-    root,
-    bg="#202020"
-)
-
-status_frame.pack(
-    fill="x",
-    padx=25,
-    pady=(5, 10)
-)
+status_frame = tk.Frame(root, bg="#202020")
+status_frame.pack(fill="x", padx=25, pady=(5, 10))
 
 status_label = tk.Label(
     status_frame,
     text="Ready",
     font=("Helvetica", 10),
     fg="#aaaaaa",
-    bg="#202020"
+    bg="#202020",
+    anchor="w"
 )
-
-status_label.pack(
-    side="left",
-    expand=True
-)
+status_label.pack(side="left", fill="x", expand=True)
 
 open_image_button = tk.Button(
     status_frame,
     text="Open Image",
-    font=("Helvetica", 10),
     command=open_image_file,
-    state="disabled",
-    padx=12,
-    pady=5
+    state="disabled"
 )
+open_image_button.pack(side="right", padx=(8, 0))
 
-open_image_button.pack(
-    side="right"
+details_button = tk.Button(
+    status_frame,
+    text="Generation Details",
+    command=show_generation_details,
+    state="disabled"
 )
+details_button.pack(side="right")
+
 
 # --------------------------------------------------
 # PROMPT INPUT
@@ -844,6 +851,11 @@ generate_button.pack(
 # Restore the previous session
 load_state()
 
+# A saved current-image path may have been deleted outside the application.
+if current_image_path and not os.path.isfile(current_image_path):
+    current_image_path = None
+    current_prompt = ""
+
 # Scan all saved images
 refresh_image_history()
 
@@ -851,13 +863,11 @@ refresh_image_history()
 if image_history:
 
     if current_image_path in image_history:
-
         display_history_image(
             image_history.index(current_image_path)
         )
 
     else:
-
         display_history_image(
             len(image_history) - 1
         )
