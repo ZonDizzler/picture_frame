@@ -40,6 +40,9 @@ image_prompts = {}
 # Continuous generation checkbox variable
 continuous_generation = None
 
+# True while an MFLUX process is running
+is_generating = False
+
 
 # --------------------------------------------------
 # SAVE / LOAD APPLICATION STATE
@@ -206,6 +209,19 @@ def update_navigation_buttons():
 
 
 # --------------------------------------------------
+# GENERATION CONTROL STATE
+# --------------------------------------------------
+
+def update_generation_controls():
+    """Disable starting another job while MFLUX is already running."""
+
+    state = "disabled" if is_generating else "normal"
+
+    generate_button.config(state=state)
+    regenerate_button.config(state=state)
+
+
+# --------------------------------------------------
 # DISPLAY IMAGE
 # --------------------------------------------------
 
@@ -248,12 +264,17 @@ def show_image(image, path, prompt):
     save_state()
     update_navigation_buttons()
 
-    status_label.config(
-        text=f"Saved to {os.path.relpath(path, APP_DIR)}"
-    )
+    if is_generating:
+        status_label.config(
+            text=f"Viewing {os.path.relpath(path, APP_DIR)} "
+                 f"| Generation in progress..."
+        )
+    else:
+        status_label.config(
+            text=f"Saved to {os.path.relpath(path, APP_DIR)}"
+        )
 
-    generate_button.config(state="normal")
-    regenerate_button.config(state="normal")
+    update_generation_controls()
 
 
 # --------------------------------------------------
@@ -350,8 +371,10 @@ def open_image_file(event=None):
 
 def show_error(error):
 
-    generate_button.config(state="normal")
-    regenerate_button.config(state="normal")
+    global is_generating
+
+    is_generating = False
+    update_generation_controls()
 
     status_label.config(text="Generation failed.")
 
@@ -368,6 +391,11 @@ def show_error(error):
 def generate_image(prompt=None):
 
     global current_prompt
+    global is_generating
+
+    # Prevent overlapping MFLUX processes.
+    if is_generating:
+        return
 
     if prompt is None:
         prompt = prompt_entry.get().strip()
@@ -392,17 +420,18 @@ def generate_image(prompt=None):
 
         return
 
-    generate_button.config(state="disabled")
-    regenerate_button.config(state="disabled")
+    is_generating = True
+    update_generation_controls()
 
-    previous_button.config(state="disabled")
-    next_button.config(state="disabled")
-
+    # Navigation remains enabled while the image is generating.
     status_label.config(
         text="Generating locally with MFLUX..."
     )
 
     saved_path = next_image_path(prompt)
+
+    # Remember which image was selected when generation started.
+    selected_path_at_start = current_image_path
 
     def work():
 
@@ -453,23 +482,51 @@ def generate_image(prompt=None):
 
             def finish_generation():
 
-                image_prompts[saved_path] = prompt
+                global is_generating
 
+                image_prompts[saved_path] = prompt
+                is_generating = False
+
+                # Add the new image to history without resetting
+                # the user's current selection.
                 refresh_image_history()
 
-                show_image(
-                    image,
-                    saved_path,
-                    prompt
+                # Automatically display the result only if the user
+                # is still viewing the image selected when generation
+                # started.
+                #
+                # If they browsed elsewhere, leave their selection
+                # untouched.
+                if current_image_path == selected_path_at_start:
+
+                    show_image(
+                        image,
+                        saved_path,
+                        prompt
+                    )
+
+                else:
+                    update_generation_controls()
+
+                status_label.config(
+                    text=f"Generated image saved to "
+                         f"{os.path.relpath(saved_path, APP_DIR)}"
                 )
 
-                # Generate another image if continuous mode is enabled.
-                # The current generation finishes before the next begins.
+                # After a short pause, generate from the prompt
+                # associated with whichever image is selected
+                # at that moment.
+                def continue_generation():
+
+                    if continuous_generation.get():
+
+                        next_prompt = current_prompt
+
+                        if next_prompt:
+                            generate_image(next_prompt)
+
                 if continuous_generation.get():
-                    root.after(
-                        500,
-                        lambda: generate_image(prompt)
-                    )
+                    root.after(500, continue_generation)
 
             root.after(0, finish_generation)
 
@@ -531,7 +588,7 @@ root.configure(bg="#202020")
 
 
 # --------------------------------------------------
-# HEADER: PROMPT + REGENERATE
+# HEADER: PROMPT + REGENERATE + CONTINUOUS GENERATION
 # --------------------------------------------------
 
 header_frame = tk.Frame(
@@ -573,6 +630,25 @@ regenerate_button = tk.Button(
 )
 
 regenerate_button.pack(
+    side="right",
+    padx=(15, 0)
+)
+
+continuous_generation = tk.BooleanVar(value=False)
+
+continuous_checkbox = tk.Checkbutton(
+    header_frame,
+    text="Keep generating",
+    variable=continuous_generation,
+    font=("Helvetica", 11),
+    fg="white",
+    bg="#202020",
+    activeforeground="white",
+    activebackground="#202020",
+    selectcolor="#333333"
+)
+
+continuous_checkbox.pack(
     side="right",
     padx=(15, 0)
 )
@@ -737,30 +813,6 @@ generate_button.pack(
 
 
 # --------------------------------------------------
-# CONTINUOUS GENERATION CHECKBOX
-# --------------------------------------------------
-
-continuous_generation = tk.BooleanVar(value=False)
-
-continuous_checkbox = tk.Checkbutton(
-    input_frame,
-    text="Keep generating",
-    variable=continuous_generation,
-    font=("Helvetica", 11),
-    fg="white",
-    bg="#202020",
-    activeforeground="white",
-    activebackground="#202020",
-    selectcolor="#333333"
-)
-
-continuous_checkbox.pack(
-    side="right",
-    padx=(0, 12)
-)
-
-
-# --------------------------------------------------
 # START APPLICATION
 # --------------------------------------------------
 
@@ -774,11 +826,13 @@ refresh_image_history()
 if image_history:
 
     if current_image_path in image_history:
+
         display_history_image(
             image_history.index(current_image_path)
         )
 
     else:
+
         display_history_image(
             len(image_history) - 1
         )
