@@ -28,6 +28,7 @@ IMAGE_HEIGHT = "512"
 
 IMAGE_DIR.mkdir(exist_ok=True)
 
+# Global variables
 current_prompt = ""
 current_image_path = None
 displayed_photo = None
@@ -408,7 +409,7 @@ def update_fullscreen_image():
 
 
 def render_fullscreen_image():
-    """Fit the original image inside the fullscreen window without cropping."""
+    """Scale the entire image to fit the fullscreen window without cropping."""
     global fullscreen_photo
 
     if fullscreen_window is None or not fullscreen_window.winfo_exists():
@@ -416,11 +417,27 @@ def render_fullscreen_image():
 
     width = fullscreen_window.winfo_width()
     height = fullscreen_window.winfo_height()
+
     if width <= 1 or height <= 1 or fullscreen_original is None:
         return
 
     image = fullscreen_original.copy()
-    image.thumbnail((width, height), Image.Resampling.LANCZOS)
+
+    # Calculate scale factor to fit the entire image.
+    scale = min(
+        width / image.width,
+        height / image.height
+    )
+
+    new_width = int(image.width * scale)
+    new_height = int(image.height * scale)
+
+    # Resize, allowing enlargement or reduction.
+    image = image.resize(
+        (new_width, new_height),
+        Image.Resampling.LANCZOS
+    )
+
     fullscreen_photo = ImageTk.PhotoImage(image)
     fullscreen_window.image_label.configure(image=fullscreen_photo)
 
