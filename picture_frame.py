@@ -2,6 +2,8 @@
 import os
 import sys
 import json
+import random
+import re
 import shutil
 import subprocess
 import tkinter as tk
@@ -118,6 +120,32 @@ def find_mflux():
 
 
 # --------------------------------------------------
+# INLINE WILDCARDS
+# --------------------------------------------------
+
+WILDCARD_PATTERN = re.compile(r"\{([^{}]+)\}")
+
+
+def expand_wildcards(prompt):
+    """
+    Replace each {option1|option2|...} group with one random option.
+
+    Each group is selected independently. The original prompt template is
+    retained separately so Regenerate can choose a new combination.
+    """
+    def choose_option(match):
+        options = [option.strip() for option in match.group(1).split("|")]
+
+        # Leave malformed groups unchanged rather than silently deleting text.
+        if len(options) < 2 or any(not option for option in options):
+            return match.group(0)
+
+        return random.choice(options)
+
+    return WILDCARD_PATTERN.sub(choose_option, prompt)
+
+
+# --------------------------------------------------
 # IMAGE FILE NAMING
 # --------------------------------------------------
 
@@ -189,10 +217,11 @@ def metadata_path(image_path):
     return Path(image_path).with_suffix(".json")
 
 
-def save_image_metadata(image_path, prompt):
-    """Save the prompt and generation settings beside the generated image."""
+def save_image_metadata(image_path, prompt, generated_prompt=None):
+    """Save the original template and resolved prompt beside the generated image."""
     metadata = {
         "prompt": prompt,
+        "generated_prompt": generated_prompt or prompt,
         "model": MODEL,
         "quantization": int(QUANTIZATION),
         "steps": int(STEPS),
@@ -253,6 +282,14 @@ def get_image_prompt(path):
     return filename
 
 
+def get_image_display_prompt(path):
+    """Return the concrete prompt used for this image, when available."""
+    metadata = load_image_metadata(path)
+    if metadata and isinstance(metadata.get("generated_prompt"), str):
+        return metadata["generated_prompt"]
+    return get_image_prompt(path)
+
+
 def show_generation_details():
     """Display the selected image's saved generation settings."""
     if not current_image_path or not os.path.isfile(current_image_path):
@@ -299,7 +336,7 @@ def update_navigation_buttons():
 # DISPLAY IMAGE
 # --------------------------------------------------
 
-def show_image(image, path, prompt):
+def show_image(image, path, prompt, display_prompt=None):
 
     global displayed_photo
     global current_image_path
@@ -315,7 +352,7 @@ def show_image(image, path, prompt):
     if path in image_history:
         current_index = image_history.index(path)
 
-    prompt_label.config(text=prompt)
+    prompt_label.config(text=display_prompt or prompt)
 
     # Resize for display without changing the saved original
     image = image.copy()
@@ -495,8 +532,9 @@ def display_history_image(index):
     try:
         image = Image.open(path).convert("RGB")
         prompt = get_image_prompt(path)
+        display_prompt = get_image_display_prompt(path)
         current_index = index
-        show_image(image, path, prompt)
+        show_image(image, path, prompt, display_prompt)
 
     except Exception as error:
         refresh_image_history()
@@ -603,7 +641,10 @@ def generate_image(prompt=None):
     if not prompt:
         return
 
-    current_prompt = prompt
+    # Keep the template for Regenerate; resolve a fresh set of choices now.
+    prompt_template = prompt
+    generated_prompt = expand_wildcards(prompt_template)
+    current_prompt = prompt_template
     prompt_entry.delete(0, tk.END)
 
     mflux_command = find_mflux()
@@ -622,7 +663,7 @@ def generate_image(prompt=None):
     update_generation_controls()
     status_label.config(text="Generating locally with MFLUX...")
 
-    saved_path = next_image_path(prompt)
+    saved_path = next_image_path(generated_prompt)
 
     def work():
         try:
@@ -631,7 +672,7 @@ def generate_image(prompt=None):
                 "--model", MODEL,
                 "--quantize", QUANTIZATION,
                 "--compute-precision", "float16",
-                "--prompt", prompt,
+                "--prompt", generated_prompt,
                 "--steps", STEPS,
                 "--width", IMAGE_WIDTH,
                 "--height", IMAGE_HEIGHT,
@@ -654,18 +695,18 @@ def generate_image(prompt=None):
                 raise RuntimeError("MFLUX finished but did not create the image.")
 
             # Save metadata only after MFLUX has successfully created the image.
-            save_image_metadata(saved_path, prompt)
+            save_image_metadata(saved_path, prompt_template, generated_prompt)
             image = Image.open(saved_path).convert("RGB")
 
             def finish_generation():
                 global is_generating
                 is_generating = False
-                image_prompts[saved_path] = prompt
+                image_prompts[saved_path] = prompt_template
                 refresh_image_history()
 
                 # Do not pull the user away from an image they selected mid-run.
                 if current_image_path == selected_path_when_started:
-                    show_image(image, saved_path, prompt)
+                    show_image(image, saved_path, prompt_template, generated_prompt)
                 else:
                     update_generation_controls()
                     status_label.config(
