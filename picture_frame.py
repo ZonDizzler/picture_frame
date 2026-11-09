@@ -31,6 +31,9 @@ IMAGE_DIR.mkdir(exist_ok=True)
 current_prompt = ""
 current_image_path = None
 displayed_photo = None
+fullscreen_window = None
+fullscreen_photo = None
+fullscreen_original = None
 
 image_history = []
 current_index = -1
@@ -329,6 +332,10 @@ def show_image(image, path, prompt):
     save_state()
     update_navigation_buttons()
 
+    # Keep the separate fullscreen window synchronized with the selection.
+    if fullscreen_window is not None and fullscreen_window.winfo_exists():
+        update_fullscreen_image()
+
     status_label.config(
         text=f"Saved to {os.path.relpath(path, APP_DIR)}"
     )
@@ -336,6 +343,114 @@ def show_image(image, path, prompt):
     open_image_button.config(state="normal")
     details_button.config(state="normal")
     update_generation_controls()
+
+
+# --------------------------------------------------
+# FULLSCREEN IMAGE WINDOW
+# --------------------------------------------------
+
+def open_fullscreen_image(event=None):
+    """Open the selected image in a separate, fullscreen Tk window."""
+    global fullscreen_window, fullscreen_photo, fullscreen_original
+
+    if not current_image_path or not os.path.isfile(current_image_path):
+        return
+
+    # Reuse the existing fullscreen window if it is already open.
+    if fullscreen_window is not None and fullscreen_window.winfo_exists():
+        update_fullscreen_image()
+        fullscreen_window.lift()
+        return
+
+    try:
+        fullscreen_original = Image.open(current_image_path).convert("RGB")
+    except Exception as error:
+        messagebox.showerror("Image Error", f"Could not open image:\n\n{error}")
+        return
+
+    fullscreen_window = tk.Toplevel(root)
+    fullscreen_window.title(Path(current_image_path).name)
+    fullscreen_window.configure(bg="black")
+    fullscreen_window.attributes("-fullscreen", True)
+
+    fullscreen_label = tk.Label(fullscreen_window, bg="black", cursor="hand2")
+    fullscreen_label.pack(fill="both", expand=True)
+    fullscreen_window.image_label = fullscreen_label
+
+    fullscreen_window.bind("<Escape>", close_fullscreen_image)
+    fullscreen_window.bind("<F11>", toggle_fullscreen)
+    fullscreen_window.bind("<Left>", handle_left_arrow)
+    fullscreen_window.bind("<Right>", handle_right_arrow)
+    fullscreen_window.bind("<Configure>", on_fullscreen_resize)
+    fullscreen_window.protocol("WM_DELETE_WINDOW", close_fullscreen_image)
+
+    render_fullscreen_image()
+    fullscreen_window.focus_force()
+
+
+def update_fullscreen_image():
+    """Reload the image currently selected in the main application."""
+    global fullscreen_original
+
+    if fullscreen_window is None or not fullscreen_window.winfo_exists():
+        return
+
+    if not current_image_path or not os.path.isfile(current_image_path):
+        return
+
+    try:
+        with Image.open(current_image_path) as source:
+            fullscreen_original = source.convert("RGB")
+        fullscreen_window.title(Path(current_image_path).name)
+        render_fullscreen_image()
+    except Exception as error:
+        print(f"Could not update fullscreen image: {error}")
+
+
+def render_fullscreen_image():
+    """Fit the original image inside the fullscreen window without cropping."""
+    global fullscreen_photo
+
+    if fullscreen_window is None or not fullscreen_window.winfo_exists():
+        return
+
+    width = fullscreen_window.winfo_width()
+    height = fullscreen_window.winfo_height()
+    if width <= 1 or height <= 1 or fullscreen_original is None:
+        return
+
+    image = fullscreen_original.copy()
+    image.thumbnail((width, height), Image.Resampling.LANCZOS)
+    fullscreen_photo = ImageTk.PhotoImage(image)
+    fullscreen_window.image_label.configure(image=fullscreen_photo)
+
+
+def on_fullscreen_resize(event):
+    if event.widget is fullscreen_window:
+        render_fullscreen_image()
+
+
+def toggle_fullscreen(event=None):
+    if fullscreen_window is not None and fullscreen_window.winfo_exists():
+        is_fullscreen = bool(fullscreen_window.attributes("-fullscreen"))
+        fullscreen_window.attributes("-fullscreen", not is_fullscreen)
+        if not is_fullscreen:
+            fullscreen_window.geometry("1100x800")
+        render_fullscreen_image()
+    return "break"
+
+
+def close_fullscreen_image(event=None):
+    """Close the separate image window and return to the main application."""
+    global fullscreen_window, fullscreen_photo, fullscreen_original
+
+    if fullscreen_window is not None and fullscreen_window.winfo_exists():
+        fullscreen_window.destroy()
+
+    fullscreen_window = None
+    fullscreen_photo = None
+    fullscreen_original = None
+    return "break"
 
 
 # --------------------------------------------------
@@ -698,6 +813,10 @@ image_label.pack(
     fill="both",
     expand=True
 )
+
+# Click the displayed image to view it in a separate fullscreen window.
+image_label.bind("<Button-1>", open_fullscreen_image)
+image_label.configure(cursor="hand2")
 
 
 # --------------------------------------------------
