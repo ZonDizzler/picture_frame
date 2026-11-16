@@ -599,6 +599,84 @@ def open_image_file(event=None):
             str(error)
         )
 
+# --------------------------------------------------
+# DELETE IMAGE
+# --------------------------------------------------
+
+def delete_current_image():
+    global current_image_path, current_prompt, current_index
+
+    if not current_image_path:
+        return
+
+    path = Path(current_image_path)
+
+    if not path.exists():
+        return
+
+    confirm = messagebox.askyesno(
+        "Delete Image",
+        f"Are you sure you want to permanently delete:\n\n{path.name}?"
+    )
+
+    if not confirm:
+        return
+
+    try:
+        # Save the deleted file's history position
+        deleted_index = current_index
+
+        # Delete the image
+        path.unlink()
+
+        # Delete its metadata JSON
+        metadata_path(path).unlink(missing_ok=True)
+
+        # Remove it from prompt memory
+        image_prompts.pop(str(path), None)
+
+        # Refresh image history
+        refresh_image_history()
+
+        # Display another image if available
+        if image_history:
+
+            
+            new_index = min(deleted_index, len(image_history) - 1)
+            new_index = max(0, new_index)
+
+            # Display the next image
+            display_history_image(new_index)
+
+        else:
+            current_image_path = None
+            current_prompt = ""
+            current_index = -1
+
+            image_label.config(
+                image="",
+                text="No images available",
+            )
+            prompt_label.config(
+                text="Your generated image will appear here"
+            )
+
+            global displayed_photo
+            displayed_photo = None
+
+            save_state()
+            update_navigation_buttons()
+            open_image_button.config(state="disabled")
+            details_button.config(state="disabled")
+            regenerate_button.config(state="disabled")
+
+        status_label.config(text="Image deleted.")
+
+    except Exception as error:
+        messagebox.showerror(
+            "Delete Error",
+            f"Could not delete image:\n\n{error}"
+        )
 
 # --------------------------------------------------
 # ERROR HANDLING
@@ -967,8 +1045,15 @@ details_button = tk.Button(
     command=show_generation_details,
     state="disabled"
 )
-details_button.pack(side="right")
 
+delete_button = tk.Button(
+    status_frame,
+    text="Delete Image",
+    command=delete_current_image,
+    fg="red"
+)
+
+delete_button.pack(side="right", padx=(8, 0))
 
 # --------------------------------------------------
 # PROMPT INPUT
